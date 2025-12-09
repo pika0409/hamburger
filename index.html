@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Q彈珍珠投擲 (Boba Toss 2.0)</title>
+    <style>
+        body {
+            font-family: 'Microsoft JhengHei', sans-serif;
+            background-color: #FFF5E6;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden; /* 防止捲動 */
+            touch-action: none; /* 防止手機上下拉動重整 */
+        }
+
+        h1 {
+            color: #8B4513;
+            margin: 10px 0;
+            font-size: 24px;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 4px solid #D2691E;
+            background-color: #fff;
+        }
+
+        canvas {
+            display: block;
+            cursor: crosshair;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            pointer-events: none;
+        }
+
+        .score-board {
+            font-size: 20px;
+            font-weight: bold;
+            color: #8B4513;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 5px 12px;
+            border-radius: 20px;
+        }
+
+        #message {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 40px;
+            font-weight: bold;
+            color: #d35400;
+            text-shadow: 2px 2px 0px #fff;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        .controls {
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+            text-align: center;
+            padding: 0 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🧋 Q彈珍珠投籃</h1>
+    
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-layer">
+            <div class="score-board">得分: <span id="score">0</span></div>
+        </div>
+        <div id="message">好球！</div>
+    </div>
+
+    <div class="controls">
+        <p>拖曳瞄準 (支援手機觸控) ➔ 放開射擊</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const msgEl = document.getElementById('message');
+
+        // --- 響應式設置 (解決杯子不見的問題) ---
+        function resizeCanvas() {
+            // 限制最大寬度，避免在電腦上太寬，但在手機上填滿
+            let w = window.innerWidth * 0.95;
+            let h = window.innerHeight * 0.6;
+            
+            if (w > 800) w = 800;
+            if (h > 600) h = 600;
+
+            canvas.width = w;
+            canvas.height = h;
+
+            // 重設物件位置
+            resetPositions();
+        }
+
+        // --- 遊戲變數 ---
+        let score = 0;
+        
+        // 輸入狀態
+        let isDragging = false;
+        let dragStartX, dragStartY;
+        let inputX, inputY; // 整合滑鼠與觸控座標
+
+        // 物理參數 (調整彈跳感)
+        const gravity = 0.8;       // 重力稍微加大
+        const bounce = 0.7;        // 彈力增加 (0.5 -> 0.7) 讓它更Q
+        const airFriction = 0.99;  // 空氣阻力
+        const floorFriction = 0.7; // 地面摩擦力 (珍珠濕濕的，落地會減速較快)
+        
+        // 物件定義
+        let boba = {
+            x: 0, y: 0,
+            radius: 12,
+            vx: 0, vy: 0,
+            angle: 0,      // 增加旋轉角度
+            vAngle: 0,     // 角速度
+            isFlying: false,
+            color: '#331a00'
+        };
+
+        let cup = {
+            x: 0, y: 0,
+            width: 0, height: 0,
+            color: '#E0C097',
+            liquidLevel: 0
+        };
+
+        let startPos = { x: 0, y: 0 };
+
+        function resetPositions() {
+            // 根據畫布大小動態計算位置
+            startPos.x = canvas.width * 0.15; // 左邊 15%
+            startPos.y = canvas.height * 0.75; // 下方 75%
+            
+            // 讓珍珠如果不飛的時候回到起點
+            if (!boba.isFlying) {
+                boba.x = startPos.x;
+                boba.y = startPos.y;
+                boba.vx = 0;
+                boba.vy = 0;
+                boba.angle = 0;
+            }
+
+            // 杯子位置 (永遠在右邊 75% 處)
+            cup.width = canvas.width * 0.15; // 杯子寬度隨螢幕縮放
+            if (cup.width < 60) cup.width = 60; // 最小寬度
+            if (cup.width > 120) cup.width = 120; // 最大寬度
+
+            cup.height = cup.width * 1.5;
+            cup.x = canvas.width * 0.75; 
+            cup.y = canvas.height - cup.height - 20; // 放在地板上
+        }
+
+        // --- 輸入事件監聽 (滑鼠 + 觸控) ---
+        function getPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            // 判斷是觸控還是滑鼠
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top
+            };
+        }
+
+        function handleStart(e) {
+            if (boba.isFlying) return;
+            // e.preventDefault(); // 防止手機畫面捲動
+            
+            const pos = getPos(e);
+            const dist = Math.hypot(pos.x - boba.x, pos.y - boba.y);
+            
+            // 判定範圍放寬一點方便手指點選
+            if (dist < 60) {
+                isDragging = true;
+                dragStartX = boba.x;
+                dragStartY = boba.y;
+                inputX = pos.x;
+                inputY = pos.y;
+            }
+        }
+
+        function handleMove(e) {
+            if (isDragging) {
+                // e.preventDefault();
+                const pos = getPos(e);
+                inputX = pos.x;
+                inputY = pos.y;
+            }
+        }
+
+        function handleEnd(e) {
+            if (isDragging) {
+                isDragging = false;
+                // 力度計算
+                const power = 0.18; // 稍微增加力度
+                boba.vx = (dragStartX - inputX) * power;
+                boba.vy = (dragStartY - inputY) * power;
+                
+                // 加入一點隨機旋轉，增加真實感
+                boba.vAngle = (Math.random() - 0.5) * 0.5;
+                
+                boba.isFlying = true;
+            }
+        }
+
+        canvas.addEventListener('mousedown', handleStart);
+        canvas.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+
+        // 手機觸控支援
+        canvas.addEventListener('touchstart', handleStart, {passive: false});
+        canvas.addEventListener('touchmove', handleMove, {passive: false});
+        window.addEventListener('touchend', handleEnd);
+
+        // --- 遊戲邏輯 ---
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        function update() {
+            if (boba.isFlying) {
+                // 重力與角度更新
+                boba.vy += gravity;
+                boba.x += boba.vx;
+                boba.y += boba.vy;
+                boba.angle += boba.vAngle; // 更新旋轉
+
+                // 空氣阻力
+                boba.vx *= airFriction;
+                boba.vy *= airFriction;
+
+                // --- 碰撞檢測：地板 ---
+                if (boba.y + boba.radius > canvas.height) {
+                    boba.y = canvas.height - boba.radius;
+                    
+                    // 彈跳
+                    boba.vy *= -bounce;
+                    
+                    // 地面摩擦 (水平速度減少)
+                    boba.vx *= floorFriction;
+                    
+                    // 落地時根據水平速度產生滾動效果
+                    boba.vAngle = boba.vx * 0.15;
+
+                    // 停止判定：當跳動極小且水平速度極小時
+                    if (Math.abs(boba.vy) < 1.5 && Math.abs(boba.vx) < 0.5) {
+                        resetBoba(false);
+                    }
+                }
+
+                // --- 碰撞檢測：牆壁 ---
+                if (boba.x + boba.radius > canvas.width) {
+                    boba.x = canvas.width - boba.radius;
+                    boba.vx *= -0.8;
+                } else if (boba.x - boba.radius < 0) {
+                    boba.x = boba.radius;
+                    boba.vx *= -0.8;
+                }
+
+                // --- 碰撞檢測：杯子 ---
+                checkCupCollision();
+            }
+        }
+
+        function checkCupCollision() {
+            // 簡易判定：進入杯口上方區域
+            if (boba.vy > 0 && // 正在往下掉
+                boba.x > cup.x && boba.x < cup.x + cup.width && // 在杯子寬度內
+                boba.y > cup.y && boba.y < cup.y + (cup.height/3)) { // 在杯口高度附近
+                
+                score++;
+                scoreEl.textContent = score;
+                showMessage("進啦！Tasty!");
+                
+                if(cup.liquidLevel < cup.height - 20) {
+                    cup.liquidLevel += 15;
+                }
+                resetBoba(true);
+            }
+            
+            // 杯壁碰撞 (簡單版：如果撞到杯子左側或右側且高度低於杯口，反彈)
+            if (boba.y > cup.y + 10) {
+                 // 左壁
+                if (boba.x + boba.radius > cup.x && boba.x < cup.x + 20) {
+                    boba.vx *= -0.8;
+                    boba.x = cup.x - boba.radius;
+                }
+            }
+        }
+
+        function resetBoba(scored) {
+            boba.isFlying = false;
+            
+            setTimeout(() => {
+                // 緩慢歸位動畫
+                let steps = 0;
+                const animateReset = () => {
+                    boba.x += (startPos.x - boba.x) * 0.2;
+                    boba.y += (startPos.y - boba.y) * 0.2;
+                    boba.radius = 12; // 確保大小正確
+                    steps++;
+                    if (steps < 20 && Math.abs(boba.x - startPos.x) > 1) {
+                        requestAnimationFrame(animateReset);
+                    } else {
+                        boba.x = startPos.x;
+                        boba.y = startPos.y;
+                        boba.angle = 0;
+                        boba.vx = 0;
+                        boba.vy = 0;
+                    }
+                };
+                animateReset();
+                
+            }, scored ? 600 : 200);
+        }
+
+        function showMessage(text) {
+            msgEl.textContent = text;
+            msgEl.style.opacity = 1;
+            msgEl.style.transform = "translate(-50%, -50%) scale(1.2)";
+            setTimeout(() => {
+                msgEl.style.opacity = 0;
+                msgEl.style.transform = "translate(-50%, -50%) scale(1)";
+            }, 800);
+        }
+
+        // --- 繪圖 ---
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. 地板
+            ctx.fillStyle = '#C7B299';
+            ctx.fillRect(0, canvas.height - 10, canvas.width, 10);
+
+            // 2. 杯子後壁
+            drawCup(true);
+
+            // 3. 瞄準線
+            if (isDragging && !boba.isFlying) {
+                ctx.beginPath();
+                ctx.strokeStyle = 'rgba(139, 69, 19, 0.4)';
+                ctx.lineWidth = 3;
+                ctx.setLineDash([8, 6]);
+                ctx.moveTo(boba.x, boba.y);
+                ctx.lineTo(inputX, inputY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // 預測線 (反向)
+                const dx = startPos.x - inputX;
+                const dy = startPos.y - inputY;
+                ctx.beginPath();
+                ctx.strokeStyle = 'rgba(210, 105, 30, 0.8)';
+                ctx.lineWidth = 4;
+                ctx.moveTo(startPos.x, startPos.y);
+                ctx.lineTo(startPos.x + dx * 1.5, startPos.y + dy * 1.5); // 畫長一點
+                ctx.stroke();
+            }
+
+            // 4. 珍珠
+            ctx.save();
+            ctx.translate(boba.x, boba.y);
+            ctx.rotate(boba.angle); // 應用旋轉
+            
+            ctx.beginPath();
+            ctx.arc(0, 0, boba.radius, 0, Math.PI * 2);
+            ctx.fillStyle = boba.color;
+            ctx.fill();
+            
+            // 高光 (讓珍珠看起來立體)
+            ctx.beginPath();
+            ctx.arc(-4, -4, 4, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fill();
+            
+            ctx.restore();
+
+            // 5. 杯子前壁 (讓珍珠看起來在杯子裡)
+            drawCup(false);
+        }
+
+        function drawCup(isBack) {
+            const pad = 10;
+            const bottomW = cup.width - 20;
+            
+            if (isBack) {
+                // 畫奶茶液體
+                if (cup.liquidLevel > 0) {
+                    ctx.fillStyle = cup.color;
+                    const h = cup.liquidLevel;
+                    ctx.fillRect(cup.x + 10, cup.y + cup.height - h, cup.width - 20, h);
+                }
+                
+                // 半透明杯身背景
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.beginPath();
+                ctx.moveTo(cup.x, cup.y);
+                ctx.lineTo(cup.x + 10, cup.y + cup.height);
+                ctx.lineTo(cup.x + cup.width - 10, cup.y + cup.height);
+                ctx.lineTo(cup.x + cup.width, cup.y);
+                ctx.fill();
+            } else {
+                // 杯子輪廓線 (前)
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)';
+                ctx.beginPath();
+                // 畫一個類似杯口的橢圓線條或是前緣
+                ctx.moveTo(cup.x, cup.y);
+                ctx.lineTo(cup.x + cup.width, cup.y);
+                ctx.stroke();
+                
+                // 杯壁兩側線條
+                ctx.beginPath();
+                ctx.moveTo(cup.x, cup.y);
+                ctx.lineTo(cup.x + 10, cup.y + cup.height);
+                ctx.moveTo(cup.x + cup.width, cup.y);
+                ctx.lineTo(cup.x + cup.width - 10, cup.y + cup.height);
+                ctx.stroke();
+            }
+        }
+
+        // 初始化與監聽視窗大小
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas(); // 啟動時執行一次
+        loop();
+
+    </script>
+</body>
+</html>
