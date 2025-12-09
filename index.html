@@ -2,455 +2,452 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>漢堡笨東西</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>漢堡笨笨笨</title>
     <style>
         body {
-            font-family: 'Microsoft JhengHei', sans-serif;
-            background-color: #FFF5E6;
+            margin: 0;
+            padding: 0;
             display: flex;
             flex-direction: column;
+            justify_content: center;
             align-items: center;
-            justify-content: center;
             height: 100vh;
-            margin: 0;
-            overflow: hidden; /* 防止捲動 */
-            touch-action: none; /* 防止手機上下拉動重整 */
+            background-color: #fcefe6;
+            font-family: "Microsoft JhengHei", "PingFang TC", sans-serif;
+            overflow: hidden;
+            user-select: none;
+            touch-action: none;
         }
-
         h1 {
-            color: #8B4513;
+            color: #5d4037;
             margin: 10px 0;
             font-size: 24px;
+            pointer-events: none;
         }
-
-        #game-container {
-            position: relative;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
-            border-radius: 12px;
-            overflow: hidden;
-            border: 4px solid #D2691E;
-            background-color: #fff;
-        }
-
         canvas {
-            display: block;
-            cursor: crosshair;
+            background-color: white;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+            border-radius: 12px;
+            cursor: grab;
         }
-
-        #ui-layer {
-            position: absolute;
-            top: 10px;
-            left: 10px;
-            pointer-events: none;
+        canvas:active {
+            cursor: grabbing;
         }
-
-        .score-board {
-            font-size: 20px;
-            font-weight: bold;
-            color: #8B4513;
-            background: rgba(255, 255, 255, 0.8);
-            padding: 5px 12px;
-            border-radius: 20px;
-        }
-
-        #message {
-            position: absolute;
-            top: 40%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 40px;
-            font-weight: bold;
-            color: #d35400;
-            text-shadow: 2px 2px 0px #fff;
-            opacity: 0;
-            transition: opacity 0.2s;
-            pointer-events: none;
-            white-space: nowrap;
-        }
-
-        .controls {
+        #controls {
             margin-top: 10px;
-            color: #666;
-            font-size: 14px;
             text-align: center;
-            padding: 0 20px;
+            color: #6d4c41;
+            font-size: 16px;
+            pointer-events: none;
+        }
+        .highlight {
+            color: #d84315;
+            font-weight: bold;
         }
     </style>
 </head>
 <body>
 
-    <h1>🧋 Q彈珍珠投籃</h1>
-    
-    <div id="game-container">
-        <canvas id="gameCanvas"></canvas>
-        <div id="ui-layer">
-            <div class="score-board">得分: <span id="score">0</span></div>
-        </div>
-        <div id="message">好球！</div>
-    </div>
+<h1>🧋 珍奶彈射大挑戰 🧋</h1>
+<canvas id="gameCanvas"></canvas>
+<div id="controls">
+    <p>拖曳珍珠瞄準，放開射擊！ | 剩餘: <span id="remain-count" class="highlight">5</span></p>
+</div>
 
-    <div class="controls">
-        <p>拖曳瞄準 (支援手機觸控) ➔ 放開射擊</p>
-    </div>
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const remainEl = document.getElementById('remain-count');
 
-    <script>
-        const canvas = document.getElementById('gameCanvas');
-        const ctx = canvas.getContext('2d');
-        const scoreEl = document.getElementById('score');
-        const msgEl = document.getElementById('message');
+    // --- 1. 物理與遊戲參數 ---
+    const GRAVITY = 0.6;           
+    const BOUNCE = 0.6;            
+    const AIR_FRICTION = 0.995;    
+    const FLOOR_FRICTION = 0.8;    
+    const POWER_MULTIPLIER = 0.15; 
 
-        // --- 響應式設置 (解決杯子不見的問題) ---
-        function resizeCanvas() {
-            // 限制最大寬度，避免在電腦上太寬，但在手機上填滿
-            let w = window.innerWidth * 0.95;
-            let h = window.innerHeight * 0.6;
-            
-            if (w > 800) w = 800;
-            if (h > 600) h = 600;
+    const COLORS = {
+        milkTea: '#D2B48C',
+        pearl: '#1E1E1E',
+        cupBorder: '#555555',
+        text: '#503C3C',
+        guideLine: 'rgba(139, 69, 19, 0.5)',
+        prediction: 'rgba(210, 105, 30, 0.8)'
+    };
 
-            canvas.width = w;
-            canvas.height = h;
+    // --- 2. 響應式視窗設定 ---
+    let bounds = { width: 800, height: 600 };
+    let cup = { x: 0, y: 0, w: 0, h: 0 };
+    let startPos = { x: 0, y: 0 };
 
-            // 重設物件位置
-            resetPositions();
-        }
-
-        // --- 遊戲變數 ---
-        let score = 0;
+    function resizeCanvas() {
+        let w = window.innerWidth * 0.95;
+        let h = window.innerHeight * 0.7; 
         
-        // 輸入狀態
-        let isDragging = false;
-        let dragStartX, dragStartY;
-        let inputX, inputY; // 整合滑鼠與觸控座標
+        if (w > 800) w = 800;
+        if (h > 600) h = 600;
 
-        // 物理參數 (調整彈跳感)
-        const gravity = 0.8;       // 重力稍微加大
-        const bounce = 0.7;        // 彈力增加 (0.5 -> 0.7) 讓它更Q
-        const airFriction = 0.99;  // 空氣阻力
-        const floorFriction = 0.7; // 地面摩擦力 (珍珠濕濕的，落地會減速較快)
+        canvas.width = w;
+        canvas.height = h;
+        bounds.width = w;
+        bounds.height = h;
+
+        startPos.x = w * 0.15;
+        startPos.y = h * 0.75;
+
+        cup.w = w * 0.15;
+        if (cup.w < 70) cup.w = 70;
+        if (cup.w > 120) cup.w = 120;
         
-        // 物件定義
-        let boba = {
-            x: 0, y: 0,
-            radius: 12,
-            vx: 0, vy: 0,
-            angle: 0,      // 增加旋轉角度
-            vAngle: 0,     // 角速度
-            isFlying: false,
-            color: '#331a00'
-        };
+        cup.h = cup.w * 1.6;
+        cup.x = w * 0.75;
+        cup.y = h - cup.h - 20;
 
-        let cup = {
-            x: 0, y: 0,
-            width: 0, height: 0,
-            color: '#E0C097',
-            liquidLevel: 0
-        };
+        if (gameState.currentPearl && !gameState.currentPearl.isFlying && !gameState.currentPearl.isSettled) {
+            gameState.currentPearl.x = startPos.x;
+            gameState.currentPearl.y = startPos.y;
+        }
+    }
 
-        let startPos = { x: 0, y: 0 };
+    // --- 3. 遊戲狀態 ---
+    let gameState = {
+        score: 0,
+        pearlsLeft: 5,
+        isGameOver: false,
+        landedPearls: [], 
+        currentPearl: null,
+        isDragging: false,
+        dragInput: { x: 0, y: 0 },
+        // 用於平滑液面動畫
+        currentLiquidLevel: 0.5, // 初始 50%
+        targetLiquidLevel: 0.5
+    };
 
-        function resetPositions() {
-            // 根據畫布大小動態計算位置
-            startPos.x = canvas.width * 0.15; // 左邊 15%
-            startPos.y = canvas.height * 0.75; // 下方 75%
-            
-            // 讓珍珠如果不飛的時候回到起點
-            if (!boba.isFlying) {
-                boba.x = startPos.x;
-                boba.y = startPos.y;
-                boba.vx = 0;
-                boba.vy = 0;
-                boba.angle = 0;
-            }
-
-            // 杯子位置 (永遠在右邊 75% 處)
-            cup.width = canvas.width * 0.15; // 杯子寬度隨螢幕縮放
-            if (cup.width < 60) cup.width = 60; // 最小寬度
-            if (cup.width > 120) cup.width = 120; // 最大寬度
-
-            cup.height = cup.width * 1.5;
-            cup.x = canvas.width * 0.75; 
-            cup.y = canvas.height - cup.height - 20; // 放在地板上
+    // --- 4. 珍珠類別 ---
+    class Pearl {
+        constructor() {
+            this.x = startPos.x;
+            this.y = startPos.y;
+            this.vx = 0;
+            this.vy = 0;
+            this.radius = 12;
+            this.isFlying = false;
+            this.isSettled = false; 
+            this.rotation = 0;
+            this.rotSpeed = 0;
         }
 
-        // --- 輸入事件監聽 (滑鼠 + 觸控) ---
-        function getPos(e) {
-            const rect = canvas.getBoundingClientRect();
-            // 判斷是觸控還是滑鼠
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            return {
-                x: clientX - rect.left,
-                y: clientY - rect.top
-            };
-        }
+        update() {
+            if (!this.isFlying || this.isSettled) return;
 
-        function handleStart(e) {
-            if (boba.isFlying) return;
-            // e.preventDefault(); // 防止手機畫面捲動
-            
-            const pos = getPos(e);
-            const dist = Math.hypot(pos.x - boba.x, pos.y - boba.y);
-            
-            // 判定範圍放寬一點方便手指點選
-            if (dist < 60) {
-                isDragging = true;
-                dragStartX = boba.x;
-                dragStartY = boba.y;
-                inputX = pos.x;
-                inputY = pos.y;
-            }
-        }
+            // 物理
+            this.vy += GRAVITY;
+            this.x += this.vx;
+            this.y += this.vy;
+            this.rotation += this.rotSpeed;
 
-        function handleMove(e) {
-            if (isDragging) {
-                // e.preventDefault();
-                const pos = getPos(e);
-                inputX = pos.x;
-                inputY = pos.y;
-            }
-        }
+            this.vx *= AIR_FRICTION;
+            this.vy *= AIR_FRICTION;
 
-        function handleEnd(e) {
-            if (isDragging) {
-                isDragging = false;
-                // 力度計算
-                const power = 0.18; // 稍微增加力度
-                boba.vx = (dragStartX - inputX) * power;
-                boba.vy = (dragStartY - inputY) * power;
-                
-                // 加入一點隨機旋轉，增加真實感
-                boba.vAngle = (Math.random() - 0.5) * 0.5;
-                
-                boba.isFlying = true;
-            }
-        }
+            // 地板碰撞
+            if (this.y + this.radius > bounds.height) {
+                this.y = bounds.height - this.radius;
+                this.vy *= -BOUNCE;
+                this.vx *= FLOOR_FRICTION;
+                this.rotSpeed = this.vx * 0.1;
 
-        canvas.addEventListener('mousedown', handleStart);
-        canvas.addEventListener('mousemove', handleMove);
-        window.addEventListener('mouseup', handleEnd);
-
-        // 手機觸控支援
-        canvas.addEventListener('touchstart', handleStart, {passive: false});
-        canvas.addEventListener('touchmove', handleMove, {passive: false});
-        window.addEventListener('touchend', handleEnd);
-
-        // --- 遊戲邏輯 ---
-        function loop() {
-            update();
-            draw();
-            requestAnimationFrame(loop);
-        }
-
-        function update() {
-            if (boba.isFlying) {
-                // 重力與角度更新
-                boba.vy += gravity;
-                boba.x += boba.vx;
-                boba.y += boba.vy;
-                boba.angle += boba.vAngle; // 更新旋轉
-
-                // 空氣阻力
-                boba.vx *= airFriction;
-                boba.vy *= airFriction;
-
-                // --- 碰撞檢測：地板 ---
-                if (boba.y + boba.radius > canvas.height) {
-                    boba.y = canvas.height - boba.radius;
-                    
-                    // 彈跳
-                    boba.vy *= -bounce;
-                    
-                    // 地面摩擦 (水平速度減少)
-                    boba.vx *= floorFriction;
-                    
-                    // 落地時根據水平速度產生滾動效果
-                    boba.vAngle = boba.vx * 0.15;
-
-                    // 停止判定：當跳動極小且水平速度極小時
-                    if (Math.abs(boba.vy) < 1.5 && Math.abs(boba.vx) < 0.5) {
-                        resetBoba(false);
-                    }
+                if (Math.abs(this.vy) < 2 && Math.abs(this.vx) < 0.5) {
+                    this.settle("miss");
                 }
-
-                // --- 碰撞檢測：牆壁 ---
-                if (boba.x + boba.radius > canvas.width) {
-                    boba.x = canvas.width - boba.radius;
-                    boba.vx *= -0.8;
-                } else if (boba.x - boba.radius < 0) {
-                    boba.x = boba.radius;
-                    boba.vx *= -0.8;
-                }
-
-                // --- 碰撞檢測：杯子 ---
-                checkCupCollision();
-            }
-        }
-
-        function checkCupCollision() {
-            // 簡易判定：進入杯口上方區域
-            if (boba.vy > 0 && // 正在往下掉
-                boba.x > cup.x && boba.x < cup.x + cup.width && // 在杯子寬度內
-                boba.y > cup.y && boba.y < cup.y + (cup.height/3)) { // 在杯口高度附近
-                
-                score++;
-                scoreEl.textContent = score;
-                showMessage("進啦！Tasty!");
-                
-                if(cup.liquidLevel < cup.height - 20) {
-                    cup.liquidLevel += 15;
-                }
-                resetBoba(true);
             }
             
-            // 杯壁碰撞 (簡單版：如果撞到杯子左側或右側且高度低於杯口，反彈)
-            if (boba.y > cup.y + 10) {
-                 // 左壁
-                if (boba.x + boba.radius > cup.x && boba.x < cup.x + 20) {
-                    boba.vx *= -0.8;
-                    boba.x = cup.x - boba.radius;
+            // 牆壁碰撞
+            if (this.x + this.radius > bounds.width) {
+                this.x = bounds.width - this.radius;
+                this.vx *= -BOUNCE;
+            } else if (this.x - this.radius < 0) {
+                this.x = this.radius;
+                this.vx *= -BOUNCE;
+            }
+
+            this.checkCupCollision();
+        }
+
+        checkCupCollision() {
+            // 進杯判定
+            if (this.vy > 0 && 
+                this.x > cup.x + 5 && this.x < cup.x + cup.w - 5 && 
+                this.y > cup.y && this.y < cup.y + cup.h / 3) {
+                
+                this.settle("hit");
+                return;
+            }
+
+            // 撞到杯壁
+            if (this.y > cup.y + 10) {
+                if (this.x + this.radius > cup.x && this.x < cup.x + cup.w / 2) {
+                    this.x = cup.x - this.radius;
+                    this.vx *= -0.8;
+                }
+                else if (this.x - this.radius < cup.x + cup.w && this.x > cup.x + cup.w / 2) {
+                    this.x = cup.x + cup.w + this.radius;
+                    this.vx *= -0.8;
                 }
             }
         }
 
-        function resetBoba(scored) {
-            boba.isFlying = false;
-            
-            setTimeout(() => {
-                // 緩慢歸位動畫
-                let steps = 0;
-                const animateReset = () => {
-                    boba.x += (startPos.x - boba.x) * 0.2;
-                    boba.y += (startPos.y - boba.y) * 0.2;
-                    boba.radius = 12; // 確保大小正確
-                    steps++;
-                    if (steps < 20 && Math.abs(boba.x - startPos.x) > 1) {
-                        requestAnimationFrame(animateReset);
-                    } else {
-                        boba.x = startPos.x;
-                        boba.y = startPos.y;
-                        boba.angle = 0;
-                        boba.vx = 0;
-                        boba.vy = 0;
-                    }
-                };
-                animateReset();
+        settle(result) {
+            this.isFlying = false;
+            this.isSettled = true;
+
+            if (result === "hit") {
+                gameState.score++;
                 
-            }, scored ? 600 : 200);
-        }
+                // 【核心修改】更新目標水位：基礎 50% + (分數 * 10%)
+                gameState.targetLiquidLevel = 0.5 + (gameState.score * 0.1);
 
-        function showMessage(text) {
-            msgEl.textContent = text;
-            msgEl.style.opacity = 1;
-            msgEl.style.transform = "translate(-50%, -50%) scale(1.2)";
-            setTimeout(() => {
-                msgEl.style.opacity = 0;
-                msgEl.style.transform = "translate(-50%, -50%) scale(1)";
-            }, 800);
-        }
-
-        // --- 繪圖 ---
-        function draw() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            // 1. 地板
-            ctx.fillStyle = '#C7B299';
-            ctx.fillRect(0, canvas.height - 10, canvas.width, 10);
-
-            // 2. 杯子後壁
-            drawCup(true);
-
-            // 3. 瞄準線
-            if (isDragging && !boba.isFlying) {
-                ctx.beginPath();
-                ctx.strokeStyle = 'rgba(139, 69, 19, 0.4)';
-                ctx.lineWidth = 3;
-                ctx.setLineDash([8, 6]);
-                ctx.moveTo(boba.x, boba.y);
-                ctx.lineTo(inputX, inputY);
-                ctx.stroke();
-                ctx.setLineDash([]);
-                
-                // 預測線 (反向)
-                const dx = startPos.x - inputX;
-                const dy = startPos.y - inputY;
-                ctx.beginPath();
-                ctx.strokeStyle = 'rgba(210, 105, 30, 0.8)';
-                ctx.lineWidth = 4;
-                ctx.moveTo(startPos.x, startPos.y);
-                ctx.lineTo(startPos.x + dx * 1.5, startPos.y + dy * 1.5); // 畫長一點
-                ctx.stroke();
+                // 投進：移動到杯內隨機位置
+                const finalX = cup.x + 15 + Math.random() * (cup.w - 30);
+                // 讓珍珠隨機堆疊在目前水位下半部
+                const finalY = (cup.y + cup.h) - 15 - (Math.random() * (cup.h * 0.6));
+                gameState.landedPearls.push({ x: finalX, y: finalY });
+            } else {
+                // 沒投進：留在原地
+                gameState.landedPearls.push({ x: this.x, y: this.y });
             }
 
-            // 4. 珍珠
+            setTimeout(nextTurn, 500);
+        }
+
+        draw() {
+            if (this.isSettled && !this.isFlying) return; 
+
             ctx.save();
-            ctx.translate(boba.x, boba.y);
-            ctx.rotate(boba.angle); // 應用旋轉
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.rotation);
             
             ctx.beginPath();
-            ctx.arc(0, 0, boba.radius, 0, Math.PI * 2);
-            ctx.fillStyle = boba.color;
+            ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+            ctx.fillStyle = COLORS.pearl;
             ctx.fill();
             
-            // 高光 (讓珍珠看起來立體)
             ctx.beginPath();
             ctx.arc(-4, -4, 4, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
             ctx.fill();
             
             ctx.restore();
-
-            // 5. 杯子前壁 (讓珍珠看起來在杯子裡)
-            drawCup(false);
         }
+    }
 
-        function drawCup(isBack) {
-            const pad = 10;
-            const bottomW = cup.width - 20;
+    // --- 5. 流程控制 ---
+
+    function initGame() {
+        gameState.score = 0;
+        gameState.pearlsLeft = 5;
+        gameState.isGameOver = false;
+        gameState.landedPearls = [];
+        gameState.currentPearl = new Pearl();
+        gameState.isDragging = false;
+        
+        // 重置水位
+        gameState.currentLiquidLevel = 0.5;
+        gameState.targetLiquidLevel = 0.5;
+        
+        remainEl.innerText = gameState.pearlsLeft;
+    }
+
+    function nextTurn() {
+        gameState.pearlsLeft--;
+        remainEl.innerText = gameState.pearlsLeft;
+        
+        if (gameState.pearlsLeft > 0) {
+            gameState.currentPearl = new Pearl();
+        } else {
+            gameState.currentPearl = null;
+            gameState.isGameOver = true;
+        }
+    }
+
+    // --- 6. 事件監聽 ---
+
+    function getEventPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top
+        };
+    }
+
+    function handleStart(e) {
+        if (gameState.isGameOver || !gameState.currentPearl || gameState.currentPearl.isFlying) return;
+        
+        const pos = getEventPos(e);
+        const dist = Math.hypot(pos.x - gameState.currentPearl.x, pos.y - gameState.currentPearl.y);
+        
+        if (dist < 60) {
+            gameState.isDragging = true;
+            gameState.dragInput = pos;
+        }
+    }
+
+    function handleMove(e) {
+        if (gameState.isDragging) {
+            gameState.dragInput = getEventPos(e);
+        }
+    }
+
+    function handleEnd(e) {
+        if (gameState.isDragging) {
+            gameState.isDragging = false;
             
-            if (isBack) {
-                // 畫奶茶液體
-                if (cup.liquidLevel > 0) {
-                    ctx.fillStyle = cup.color;
-                    const h = cup.liquidLevel;
-                    ctx.fillRect(cup.x + 10, cup.y + cup.height - h, cup.width - 20, h);
-                }
-                
-                // 半透明杯身背景
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-                ctx.beginPath();
-                ctx.moveTo(cup.x, cup.y);
-                ctx.lineTo(cup.x + 10, cup.y + cup.height);
-                ctx.lineTo(cup.x + cup.width - 10, cup.y + cup.height);
-                ctx.lineTo(cup.x + cup.width, cup.y);
-                ctx.fill();
-            } else {
-                // 杯子輪廓線 (前)
-                ctx.lineWidth = 3;
-                ctx.strokeStyle = 'rgba(200, 200, 200, 0.8)';
-                ctx.beginPath();
-                // 畫一個類似杯口的橢圓線條或是前緣
-                ctx.moveTo(cup.x, cup.y);
-                ctx.lineTo(cup.x + cup.width, cup.y);
-                ctx.stroke();
-                
-                // 杯壁兩側線條
-                ctx.beginPath();
-                ctx.moveTo(cup.x, cup.y);
-                ctx.lineTo(cup.x + 10, cup.y + cup.height);
-                ctx.moveTo(cup.x + cup.width, cup.y);
-                ctx.lineTo(cup.x + cup.width - 10, cup.y + cup.height);
-                ctx.stroke();
+            const dx = startPos.x - gameState.dragInput.x;
+            const dy = startPos.y - gameState.dragInput.y;
+            
+            if (gameState.currentPearl) {
+                gameState.currentPearl.vx = dx * POWER_MULTIPLIER;
+                gameState.currentPearl.vy = dy * POWER_MULTIPLIER;
+                gameState.currentPearl.isFlying = true;
+                gameState.currentPearl.rotSpeed = (Math.random() - 0.5) * 0.5;
             }
         }
+    }
 
-        // 初始化與監聽視窗大小
-        window.addEventListener('resize', resizeCanvas);
-        resizeCanvas(); // 啟動時執行一次
-        loop();
+    canvas.addEventListener('mousedown', handleStart);
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleEnd);
 
-    </script>
+    canvas.addEventListener('touchstart', handleStart, {passive: false});
+    window.addEventListener('touchmove', handleMove, {passive: false});
+    window.addEventListener('touchend', handleEnd);
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() === 'r') {
+            initGame();
+        }
+    });
+
+    // --- 7. 繪圖迴圈 ---
+
+    function drawLandedPearls() {
+        gameState.landedPearls.forEach(p => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
+            ctx.fillStyle = COLORS.pearl;
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.beginPath(); ctx.arc(p.x-4, p.y-4, 4, 0, Math.PI*2); ctx.fill();
+        });
+    }
+
+    function drawAimingLine() {
+        if (gameState.isDragging && !gameState.currentPearl.isFlying) {
+            ctx.beginPath();
+            ctx.moveTo(startPos.x, startPos.y);
+            ctx.lineTo(gameState.dragInput.x, gameState.dragInput.y);
+            ctx.strokeStyle = COLORS.guideLine;
+            ctx.lineWidth = 3;
+            ctx.setLineDash([8, 6]);
+            ctx.stroke();
+
+            const dx = startPos.x - gameState.dragInput.x;
+            const dy = startPos.y - gameState.dragInput.y;
+            ctx.beginPath();
+            ctx.moveTo(startPos.x, startPos.y);
+            ctx.lineTo(startPos.x + dx, startPos.y + dy);
+            ctx.strokeStyle = COLORS.prediction;
+            ctx.lineWidth = 4;
+            ctx.setLineDash([]);
+            ctx.stroke();
+        }
+    }
+
+    function loop() {
+        // 更新邏輯
+        if (gameState.currentPearl) {
+            gameState.currentPearl.update();
+        }
+
+        // 水位動畫 (讓上升變平滑)
+        if (gameState.currentLiquidLevel < gameState.targetLiquidLevel) {
+            gameState.currentLiquidLevel += 0.005; // 上升速度
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // --- 畫杯子 (後層：奶茶) ---
+        // 計算當前高度像素
+        const liquidH = cup.h * gameState.currentLiquidLevel;
+        
+        ctx.fillStyle = COLORS.milkTea;
+        ctx.fillRect(cup.x + 5, cup.y + (cup.h - liquidH), cup.w - 10, liquidH);
+        
+        // 畫珍珠
+        drawLandedPearls();
+
+        // 畫杯子 (前層：框線)
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = COLORS.cupBorder;
+        ctx.strokeRect(cup.x, cup.y, cup.w, cup.h);
+        ctx.beginPath();
+        ctx.moveTo(cup.x, cup.y);
+        ctx.lineTo(cup.x + cup.w, cup.y);
+        ctx.stroke();
+
+        // 發射台
+        ctx.beginPath();
+        ctx.arc(startPos.x, startPos.y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#bbb';
+        ctx.fill();
+
+        drawAimingLine();
+
+        if (gameState.currentPearl) {
+            gameState.currentPearl.draw();
+        }
+
+        // UI
+        ctx.font = 'bold 30px "Microsoft JhengHei"';
+        ctx.fillStyle = COLORS.text;
+        ctx.textAlign = 'left';
+        ctx.fillText(`得分: ${gameState.score} / 5`, 20, 50);
+
+        // 結束畫面
+        if (gameState.isGameOver) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.textAlign = 'center';
+            let msg = "", color = "#000";
+            
+            if (gameState.score === 5) { msg = "珍珠之神！完美滿杯！🎉"; color = "#E64A19"; }
+            else if (gameState.score >= 3) { msg = "好喝！做得好！😋"; color = "#388E3C"; }
+            else { msg = "再試一次吧！💪"; color = "#616161"; }
+
+            ctx.font = 'bold 40px "Microsoft JhengHei"';
+            ctx.fillStyle = color;
+            ctx.fillText(msg, canvas.width / 2, canvas.height / 2 - 20);
+
+            ctx.font = '24px "Microsoft JhengHei"';
+            ctx.fillStyle = "#333";
+            ctx.fillText("按 R 或 點擊螢幕 重新開始", canvas.width / 2, canvas.height / 2 + 40);
+        }
+
+        requestAnimationFrame(loop);
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+        if(gameState.isGameOver) initGame();
+    });
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+    initGame();
+    loop();
+
+</script>
 </body>
-
 </html>
